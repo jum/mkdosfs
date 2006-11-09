@@ -4,7 +4,7 @@
 
 CC = gcc
 CPP = $(CC) -E
-OPTFLAGS = -O2 -fomit-frame-pointer
+OPTFLAGS = -O2 -fomit-frame-pointer -D_FILE_OFFSET_BITS=64
 WARNFLAGS = -Wall
 DEBUGFLAGS = 
 CFLAGS = $(OPTFLAGS) $(WARNFLAGS) $(DEBUGFLAGS)
@@ -87,6 +87,6 @@ release:
 	rm version.h.tmp
 	if [ -d CVS ]; then \
 		cvs commit -m"Raised version to $(VER)" version.h; \
-		cvs tag RELEASE-`echo $(VER) | sed 's/\./-/g'`; \
+		cvs tag -c -F RELEASE-`echo $(VER) | sed 's/\./-/g'`; \
 	fi
 

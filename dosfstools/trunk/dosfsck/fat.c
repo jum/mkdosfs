@@ -11,9 +11,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define _LINUX_STRING_H_
-#include <linux/msdos_fs.h>
-
 #include "common.h"
 #include "dosfsck.h"
 #include "io.h"
@@ -38,7 +35,7 @@ static void get_fat(FAT_ENTRY *entry,void *fat,unsigned long cluster,DOS_FS *fs)
 	/* According to M$, the high 4 bits of a FAT32 entry are reserved and
 	 * are not part of the cluster number. So we cut them off. */
 	{
-	    unsigned long e = CF_LE_L(((unsigned long *) fat)[cluster]);
+	    unsigned long e = CF_LE_L(((unsigned int *) fat)[cluster]);
 	    entry->value = e & 0xfffffff;
 	    entry->reserved = e >> 28;
 	}
@@ -59,11 +56,15 @@ void read_fat(DOS_FS *fs)
 
     eff_size = ((fs->clusters+2)*fs->fat_bits+7)/8;
     first = alloc(eff_size);
-    second = alloc(eff_size);
     fs_read(fs->fat_start,eff_size,first);
-    fs_read(fs->fat_start+fs->fat_size,eff_size,second);
     use = first;
-    if (memcmp(first,second,eff_size) != 0) {
+    if (fs->nfats > 1) {
+	second = alloc(eff_size);
+	fs_read(fs->fat_start+fs->fat_size,eff_size,second);
+    }
+    else
+	second = NULL;
+    if (second && memcmp(first,second,eff_size) != 0) {
 	FAT_ENTRY first_media, second_media;
 	get_fat(&first_media,first,0,fs);
 	get_fat(&second_media,second,0,fs);
@@ -106,7 +107,8 @@ void read_fat(DOS_FS *fs)
 	    set_fat(fs,i,-1);
 	}
     free(first);
-    free(second);
+    if (second)
+	free(second);
 }
 
 

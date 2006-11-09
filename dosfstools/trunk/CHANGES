@@ -1,3 +1,62 @@
+version 2.11
+============
+
+ - all: don't use own llseek() anymore, glibc lseek() does everything we need
+ - dosfsck: lfn.c: avoid segfault
+ - dosfsck: check.c, lfn.c: check for orphaned LFN slots
+ - dosfsck: check.c alloc_rootdir_entry(): set owner of newly alloced clusters
+ - dosfsck: dosfsck.h: better use <byteswap.h> for byte swapping
+ - dosfsck: io.c: added code for real DOS
+ - mkdosfs: raised FAT12_THRESHOLD from 4078 to 4085, introduced MIN_CLUST_32
+ - mkdosfs: fix loop device size
+ - mkdosfs: by default, use FAT32 on devices >= 512MB
+ - mkdosfs: fix a memory leak (blank_sector)
+ - mkdosfs: fix parsing of number of blocks on command line, so that numbers
+   >2G can be used
+ - mkdosfs: add 'b' to getopt() string so this option can be used :)
+ - mkdosfs: fix parsing of -i arg (should be unsigned)
+ - mkdosfs: change default permissions of created images (-C) to 0666 & ~umask
+ - mkdosfs: relax geometry check: if HDIO_GETGEO fails, print a warning and
+   default to H=255,S=63
+ - dosfsck: new option -n (no-op): just check non-interactively, but
+   don't write anything to filesystem
+ - A few #include changes to support compilation with linux 2.6
+   headers (thanks to Jim Gifford <jim@jg555.com>)
+ - dosfsck: remove directory entries pointing to start cluster 0, if they're
+   not "." or ".." entries that should actually point to the root dir
+   (pointed out by Thomas Winkler <twinkler@sysgo.de>)
+ - mkdosfs: new option -h to set number of hidden sectors
+   (thanks to Godwin Stewart <gstewart@spamcop.net>)
+ - all: updated my mail address everywhere...
+
+version 2.10
+============
+
+ - dosfsck: various 64-bit fixes and removed some warnings by Michal
+   Cihar <mcihar@suse.cz>
+ - mkdosfs: better error message if called without parameters (also
+   suggested by Michal)
+
+version 2.9
+===========
+
+ - dosfsck: if EOF from stdin, exit with error code
+ - dosfsck: Fix potential for "Internal error: next_cluster on bad cluster".
+ - dosfsck: When clearing long file names, don't overwrite the dir
+   entries with all zeros, but put 0xe5 into the first byte.
+   Otherwise, some OSes stop reading the directory at that point...
+ - dosfsck: in statistics printed by -v, fix 32bit overflow in number
+   of data bytes.
+ - dosfsck: fix an potential overflow in "too many clusters" check
+ - dosfsck: fix 64bit problem in fat.c (Debian bug #152769)
+ - dosfsck: allow FAT size > 32MB.
+ - dosfsck: allow for only one FAT
+ - dosfsck: with -v, also check that last sector of the filesystem can
+   be read (in case a partition is smaller than the fs thinks)
+ - mkdosfs: add note in manpage that creating bootable filesystems is
+   not supported.
+ - mkdosfs: better error message with pointer to -I if target is a
+   full-disk device.
 
 version 2.8
 ===========

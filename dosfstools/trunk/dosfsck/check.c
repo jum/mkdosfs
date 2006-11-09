@@ -80,7 +80,7 @@ loff_t alloc_rootdir_entry(DOS_FS *fs, DIR_ENT *de, const char *pattern)
 	    }
 	    i += sizeof(DIR_ENT);
 	    offset += sizeof(DIR_ENT);
-	    if (i >= fs->cluster_size) {
+	    if ((i % fs->cluster_size) == 0) {
 		prev = clu_num;
 		if ((clu_num = next_cluster(fs,clu_num)) == 0 || clu_num == -1)
 		    break;
@@ -101,6 +101,7 @@ loff_t alloc_rootdir_entry(DOS_FS *fs, DIR_ENT *de, const char *pattern)
 		die("Root directory full and no free cluster");
 	    set_fat(fs,prev,clu_num);
 	    set_fat(fs,clu_num,-1);
+	    set_owner(fs, clu_num, get_owner(fs, fs->root_cluster));
 	    /* clear new cluster */
 	    memset( &d2, 0, sizeof(d2) );
 	    offset = cluster_start(fs,clu_num);
@@ -120,7 +121,7 @@ loff_t alloc_rootdir_entry(DOS_FS *fs, DIR_ENT *de, const char *pattern)
 		    break;
 		i += sizeof(DIR_ENT);
 		offset2 += sizeof(DIR_ENT);
-		if (i >= fs->cluster_size) {
+		if ((i % fs->cluster_size) == 0) {
 		    if ((clu_num = next_cluster(fs,clu_num)) == 0 ||
 			clu_num == -1)
 			break;
@@ -422,6 +423,12 @@ static int check_file(DOS_FS *fs,DOS_FILE *file)
 	    }
 	    return 0;
 	}
+	if (FSTART(file,fs)==0){
+		printf ("%s\n Start does point to root directory. Deleting dir. \n",
+				path_name(file));
+    		MODIFY(file,name[0],DELETED_FLAG);
+		return 0;
+	}
     }
     if (FSTART(file,fs) >= fs->clusters+2) {
 	printf("%s\n  Start cluster beyond limit (%lu > %lu). Truncating file.\n",
@@ -664,11 +671,12 @@ static int check_dir(DOS_FS *fs,DOS_FILE **root,int dots)
 static void test_file(DOS_FS *fs,DOS_FILE *file,int read_test)
 {
     DOS_FILE *owner;
-    unsigned long walk,prev,clusters;
+    unsigned long walk,prev,clusters,next_clu;
 
     prev = clusters = 0;
     for (walk = FSTART(file,fs); walk > 0 && walk < fs->clusters+2;
-      walk = next_cluster(fs,walk)) {
+      walk = next_clu) {
+	next_clu = next_cluster(fs,walk);
 	if ((owner = get_owner(fs,walk))) {
 	    if (owner == file) {
 		printf("%s\n  Circular cluster chain. Truncating to %lu "
@@ -755,7 +763,10 @@ static void add_file(DOS_FS *fs,DOS_FILE ***chain,DOS_FILE *parent,
 	file_modify(cp,de.name);
 	fs_write(offset,1,&de);
     }
-    if (IS_FREE(de.name)) return;
+    if (IS_FREE(de.name)) {
+	lfn_check_orphaned();
+	return;
+    }
     if (de.attr == VFAT_LN_ATTR) {
 	lfn_add_slot(&de,offset);
 	return;
@@ -804,6 +815,7 @@ static int scan_dir(DOS_FS *fs,DOS_FILE *this,FDSC **cp)
 	    if ((clu_num = next_cluster(fs,clu_num)) == 0 || clu_num == -1)
 		break;
     }
+    lfn_check_orphaned();
     if (check_dir(fs,&this->first,this->offset)) return 0;
     if (check_files(fs,this->first)) return 1;
     return subdirs(fs,this,cp);
@@ -838,6 +850,7 @@ int scan_root(DOS_FS *fs)
 	for (i = 0; i < fs->root_entries; i++)
 	    add_file(fs,&chain,NULL,fs->root_start+i*sizeof(DIR_ENT),&fp_root);
     }
+    lfn_check_orphaned();
     (void) check_dir(fs,&root,0);
     if (check_files(fs,root)) return 1;
     return subdirs(fs,NULL,&fp_root);

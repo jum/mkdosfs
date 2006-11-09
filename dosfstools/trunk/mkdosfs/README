@@ -47,4 +47,4 @@ where MS-DOS expects a 12 bit FAT. So such filesystems would be FAT16,
 but interpreted as FAT32 by DOS. The fix is to reduce filesystem size
 a bit.
 
-- Roman <Roman.Hodek@informatik.uni-erlangen.de>
+- Roman <roman@hodek.net>

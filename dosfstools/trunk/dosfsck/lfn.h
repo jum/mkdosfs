@@ -15,4 +15,6 @@ void lfn_add_slot( DIR_ENT *de, loff_t dir_offset );
 char *lfn_get( DIR_ENT *de );
 /* Retrieve the long name for the proper dir entry. */
 
+void lfn_check_orphaned(void);
+
 #endif
