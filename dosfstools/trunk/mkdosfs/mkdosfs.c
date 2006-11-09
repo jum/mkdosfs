@@ -25,6 +25,9 @@
    - Support for filesystems > 2GB
    - FAT32 support
    
+   Port to work under Windows NT/2K/XP Dec 2002 by
+   Jens-Uwe Mager <jum@anubis.han.de>
+
    Copying:     Copyright 1993, 1994 David Hudson (dave@humbug.demon.co.uk)
 
    Portions copyright 1992, 1993 Remy Card (card@masi.ibp.fr)
@@ -49,20 +52,32 @@
 
 #include "../version.h"
 
-#include <fcntl.h>
+#ifdef _WIN32
+#define _WIN32_WINNT	0x0400
+#include <windows.h>
+#include <winioctl.h>
+#define __LITTLE_ENDIAN	1234
+#define __BIG_ENDIAN	4321
+#define __BYTE_ORDER	__LITTLE_ENDIAN
+#define inline
+#define __attribute__(x)
+#define BLOCK_SIZE		512
+#else
 #include <linux/hdreg.h>
 #include <linux/fs.h>
 #include <linux/fd.h>
 #include <endian.h>
 #include <mntent.h>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+#include <fcntl.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <time.h>
 
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -92,6 +107,220 @@
 
 #endif /* __BIG_ENDIAN */
 
+#ifdef _WIN32
+
+typedef unsigned char __u8;
+typedef unsigned short __u16;
+typedef unsigned int __u32;
+typedef unsigned __int64 __u64;
+typedef __int64 loff_t;
+typedef __int64 ll_t;
+
+extern char *optarg;
+extern int optind;
+extern int opterr;
+extern int optopt;
+int getopt(int argc, char *const argv[], const char * optstring);
+
+static int is_device = 0;
+
+#define open	WIN32open
+#define close	WIN32close
+#define read	WIN32read
+#define write	WIN32write
+#define llseek	WIN32llseek
+
+#define O_SHORT_LIVED   _O_SHORT_LIVED
+#define O_ACCMODE       3
+#define O_NONE          3
+#define O_BACKUP        0x10000
+#define O_SHARED        0x20000
+
+static int WIN32open(const char *path, int oflag, ...)
+{
+	HANDLE fh;
+	DWORD desiredAccess;
+	DWORD shareMode;
+	DWORD creationDisposition;
+	DWORD flagsAttributes = FILE_ATTRIBUTE_NORMAL;
+	SECURITY_ATTRIBUTES securityAttributes;
+	va_list ap;
+	int pmode;
+	int trunc = FALSE;
+
+	securityAttributes.nLength = sizeof(securityAttributes);
+	securityAttributes.lpSecurityDescriptor = NULL;
+	securityAttributes.bInheritHandle = oflag & O_NOINHERIT ? FALSE : TRUE;
+	switch (oflag & O_ACCMODE) {
+	case O_RDONLY:
+		desiredAccess = GENERIC_READ;
+		shareMode = FILE_SHARE_READ;
+		break;
+	case O_WRONLY:
+		desiredAccess = GENERIC_WRITE;
+		shareMode = 0;
+		break;
+	case O_RDWR:
+		desiredAccess = GENERIC_READ|GENERIC_WRITE;
+		shareMode = 0;
+		break;
+	case O_NONE:
+		desiredAccess = 0;
+		shareMode = FILE_SHARE_READ|FILE_SHARE_WRITE;
+	}
+	if (oflag & O_APPEND) {
+		desiredAccess |= FILE_APPEND_DATA|SYNCHRONIZE;
+		shareMode = FILE_SHARE_READ|FILE_SHARE_WRITE;
+	}
+	if (oflag & O_SHARED)
+		shareMode |= FILE_SHARE_READ|FILE_SHARE_WRITE;
+        switch (oflag & (O_CREAT|O_EXCL|O_TRUNC)) {
+	case 0:
+	case O_EXCL:
+		creationDisposition = OPEN_EXISTING;
+		break;
+	case O_CREAT:
+		creationDisposition = OPEN_ALWAYS;
+		break;
+	case O_CREAT|O_EXCL:
+	case O_CREAT|O_TRUNC|O_EXCL:
+		creationDisposition = CREATE_NEW;
+		break;
+	case O_TRUNC:
+	case O_TRUNC|O_EXCL:
+		creationDisposition = TRUNCATE_EXISTING;
+		break;
+	case O_CREAT|O_TRUNC:
+		creationDisposition = OPEN_ALWAYS;
+		trunc = TRUE;
+		break;
+        }
+	if (oflag & O_CREAT) {
+		va_start(ap, oflag);
+		pmode = va_arg(ap, int);
+		va_end(ap);
+		if ((pmode & 0222) == 0)
+			flagsAttributes |= FILE_ATTRIBUTE_READONLY;
+	}
+	if (oflag & O_TEMPORARY) {
+		flagsAttributes |= FILE_FLAG_DELETE_ON_CLOSE;
+		desiredAccess |= DELETE;
+	}
+	if (oflag & O_SHORT_LIVED)
+		flagsAttributes |= FILE_ATTRIBUTE_TEMPORARY;
+	if (oflag & O_SEQUENTIAL)
+		flagsAttributes |= FILE_FLAG_SEQUENTIAL_SCAN;
+	else if (oflag & O_RANDOM)
+		flagsAttributes |= FILE_FLAG_RANDOM_ACCESS;
+	if (oflag & O_BACKUP)
+		flagsAttributes |= FILE_FLAG_BACKUP_SEMANTICS;
+	if ((fh = CreateFile(path, desiredAccess, shareMode, &securityAttributes,
+				creationDisposition, flagsAttributes, NULL)) == INVALID_HANDLE_VALUE) {
+		errno = GetLastError();
+		return -1;
+	}
+	if (trunc) {
+		if (!SetEndOfFile(fh)) {
+			errno = GetLastError();
+			CloseHandle(fh);
+			DeleteFile(path);
+			return -1;
+		}
+	}
+	return (int)fh;
+}
+
+static int WIN32close(int fd)
+{
+	if (!CloseHandle((HANDLE)fd)) {
+		errno = GetLastError();
+		return -1;
+	}
+	return 0;
+}
+
+static int WIN32read(int fd, void *buf, unsigned int len)
+{
+	DWORD actualLen;
+
+	if (!ReadFile((HANDLE)fd, buf, (DWORD)len, &actualLen, NULL)) {
+		errno = GetLastError();
+		if (errno == ERROR_BROKEN_PIPE)
+			return 0;
+		else
+			return -1;
+	}
+	return (int)actualLen;
+}
+
+static int WIN32write(int fd, void *buf, unsigned int len)
+{
+	DWORD actualLen;
+
+	if (!WriteFile((HANDLE)fd, buf, (DWORD)len, &actualLen, NULL)) {
+		errno = GetLastError();
+		return -1;
+	}
+	return (int)actualLen;
+}
+
+static loff_t WIN32llseek(int fd, loff_t offset, int whence)
+{
+	long lo, hi;
+	DWORD err;
+
+	lo = offset & 0xffffffff;
+	hi = offset >> 32;
+	lo = SetFilePointer((HANDLE)fd, lo, &hi, whence);
+	if (lo == 0xFFFFFFFF && (err = GetLastError()) != NO_ERROR) {
+		errno = err;
+		return -1;
+	}
+	return ((loff_t)hi << 32) | (off_t)lo;
+}
+
+int fsctl(int fd, int code)
+{
+	DWORD ret;
+	if (!DeviceIoControl((HANDLE)fd, code, NULL, 0, NULL, 0, &ret, NULL)) {
+		errno = GetLastError();
+		return -1;
+	}
+	return 0; 
+}
+
+void perror(const char *string)
+{
+	char *err = NULL;
+	int e = errno;
+
+        FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|
+                FORMAT_MESSAGE_IGNORE_INSERTS|FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                NULL, e, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (char *)&err, 0, NULL );
+        if (err == NULL) {
+                FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_STRING|
+                        FORMAT_MESSAGE_MAX_WIDTH_MASK|FORMAT_MESSAGE_ARGUMENT_ARRAY,
+                        "Error %1!d!", 0, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                        (char *)&err, 0, (char **)&e);
+        }
+	fprintf(stderr, "%s: %s\n", string, err);
+	LocalFree(err);
+}
+
+#else
+
+#define O_NOINHERIT    0
+#define O_TEMPORARY    0
+#define O_SHORT_LIVED  0
+#define O_SEQUENTIAL   0
+#define O_RANDOM       0
+#define O_BACKUP       0
+#define O_SHARED       0
+#ifndef O_NONE
+# define O_NONE        0
+#endif
+
+typedef long long ll_t;
 /* Use the _llseek system call directly, because there (once?) was a bug in
  * the glibc implementation of it. */
 #include <linux/unistd.h>
@@ -115,6 +344,8 @@ static loff_t llseek( int fd, loff_t offset, int whence )
 	return (loff_t)-1;
     return actual;
 }
+#endif
+
 #endif
 
 /* Constant definitions */
@@ -190,6 +421,9 @@ cdiv (int a, int b)
 /* __attribute__ ((packed)) is used on all structures to make gcc ignore any
  * alignments */
 
+#ifdef _WIN32
+#pragma pack(push, 1)
+#endif
 struct msdos_volume_info {
   __u8		drive_number;	/* BIOS drive number */
   __u8		RESERVED;	/* Unused */
@@ -260,6 +494,10 @@ struct msdos_dir_entry
     __u16	time, date, start;	/* time, date and first cluster */
     __u32	size;			/* file size (in bytes) */
   } __attribute__ ((packed));
+
+#ifdef _WIN32
+#pragma pack(pop)
+#endif
 
 /* The "boot code" we put into the filesystem... it writes a message and
    tells the user to try again */
@@ -340,7 +578,11 @@ static void get_list_blocks (char *filename);
 static int valid_offset (int fd, loff_t offset);
 static int count_blocks (char *filename);
 static void check_mount (char *device_name);
+#ifdef _WIN32
+static void establish_params (void);
+#else
 static void establish_params (int device_num, int size);
+#endif
 static void setup_tables (void);
 static void write_tables (void);
 
@@ -436,7 +678,7 @@ do_check (char *buffer, int try, unsigned int current_block)
   return got;
 }
 
-
+#ifndef _WIN32
 /* Alarm clock handler - display the status of the quest for bad blocks!  Then retrigger the alarm for five senconds
    later (so we can come here again) */
 
@@ -454,7 +696,7 @@ alarm_intr (int alnum)
   printf ("%d... ", currently_testing);
   fflush (stdout);
 }
-
+#endif
 
 static void
 check_blocks (void)
@@ -469,11 +711,13 @@ check_blocks (void)
       fflush (stdout);
     }
   currently_testing = 0;
+#ifndef _WIN32
   if (verbose)
     {
       signal (SIGALRM, alarm_intr);
       alarm (5);
     }
+#endif
   try = TEST_BUFFER_BLOCKS;
   while (currently_testing < blocks)
     {
@@ -532,6 +776,7 @@ get_list_blocks (char *filename)
 }
 
 
+#ifndef _WIN32
 /* Given a file descriptor and an offset, check whether the offset is a valid offset for the file - return FALSE if it
    isn't valid or TRUE if it is */
 
@@ -546,6 +791,7 @@ valid_offset (int fd, loff_t offset)
     return FALSE;
   return TRUE;
 }
+#endif
 
 
 /* Given a filename, look to see how many blocks of BLOCK_SIZE are present, returning the answer */
@@ -553,6 +799,37 @@ valid_offset (int fd, loff_t offset)
 static int
 count_blocks (char *filename)
 {
+#ifdef _WIN32
+	int fd;
+	DISK_GEOMETRY geom;
+	BY_HANDLE_FILE_INFORMATION hinfo;
+	DWORD ret;
+	loff_t len = 0;
+
+	if ((fd = open(filename, O_RDONLY)) < 0) {
+		perror(filename);
+		exit(1);
+	}
+	/*
+	 * This should probably use IOCTL_DISK_GET_LENGTH_INFO here, but
+	 * this ioctl is only available in XP and up.
+	 */
+	if (is_device) {
+		if (!DeviceIoControl((HANDLE)fd, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &geom, sizeof(geom), &ret, NULL)) {
+			errno = GetLastError();
+			die("unable to get length for '%s'");
+		}
+		len = (loff_t)geom.Cylinders.QuadPart*(loff_t)geom.TracksPerCylinder*(loff_t)geom.SectorsPerTrack*(loff_t)BLOCK_SIZE;
+	} else {
+		if (!GetFileInformationByHandle((HANDLE)fd, &hinfo)) {
+				errno = GetLastError();
+				die("unable to get length for '%s'");
+		}
+		len = ((loff_t)hinfo.nFileSizeHigh << 32) | (loff_t)hinfo.nFileSizeLow;
+	}
+	close(fd);
+	return len/BLOCK_SIZE;
+#else
   loff_t high, low;
   int fd;
 
@@ -578,6 +855,7 @@ count_blocks (char *filename)
   close (fd);
 
   return (low + 1) / BLOCK_SIZE;
+#endif
 }
 
 
@@ -586,6 +864,7 @@ count_blocks (char *filename)
 static void
 check_mount (char *device_name)
 {
+#ifndef _WIN32
   FILE *f;
   struct mntent *mnt;
 
@@ -595,11 +874,70 @@ check_mount (char *device_name)
     if (strcmp (device_name, mnt->mnt_fsname) == 0)
       die ("%s contains a mounted file system.");
   endmntent (f);
+#endif
 }
 
 
 /* Establish the geometry and media parameters for the device */
+#ifdef _WIN32
+static void
+establish_params (void)
+{
+	DISK_GEOMETRY geometry;
+	DWORD ret;
 
+	if (!is_device) {
+		bs.media = (char) 0xf8; /* Set up the media descriptor for a hard drive */
+		bs.dir_entries[0] = (char) 0;
+		bs.dir_entries[1] = (char) 2;
+		/* For FAT32, use 4k clusters on sufficiently large file systems,
+		 * otherwise 1 sector per cluster. This is also what M$'s format
+		 * command does for FAT32. */
+		bs.cluster_size = (char)
+		 (size_fat == 32 ?
+	     ((ll_t)blocks*SECTORS_PER_BLOCK >= 512*1024 ? 8 : 1) :
+	      4); /* FAT12 and FAT16: start at 4 sectors per cluster */
+		return;
+	}
+	if (!DeviceIoControl((HANDLE)dev, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &geometry, sizeof(geometry), &ret, NULL)) {
+		errno = GetLastError();
+		die ("unable to get geometry for '%s'");
+	}
+    bs.secs_track = geometry.SectorsPerTrack;
+    bs.heads = geometry.TracksPerCylinder;
+	switch (geometry.MediaType) {
+	case F3_1Pt44_512:
+		bs.media = (char) 0xf9;
+		bs.cluster_size = (char) 2;
+		bs.dir_entries[0] = (char) 112;
+		bs.dir_entries[1] = (char) 0;
+		break;
+	case F3_2Pt88_512:
+		bs.media = (char) 0xf0;
+		bs.cluster_size = (char)(atari_format ? 2 : 1);
+		bs.dir_entries[0] = (char) 224;
+		bs.dir_entries[1] = (char) 0;
+		break;
+	case F3_720_512:
+		bs.media = (char) 0xfd;
+		bs.cluster_size = (char) 2;
+		bs.dir_entries[0] = (char) 112;
+		bs.dir_entries[1] = (char) 0;
+		break;
+	default:
+		bs.media = (char) 0xf8; /* Set up the media descriptor for a hard drive */
+		bs.dir_entries[0] = (char) 0;
+		bs.dir_entries[1] = (char) 2;
+		/* For FAT32, use 4k clusters on sufficiently large file systems,
+		 * otherwise 1 sector per cluster. This is also what M$'s format
+		 * command does for FAT32. */
+		bs.cluster_size = (char)
+		 (size_fat == 32 ?
+	     ((ll_t)blocks*SECTORS_PER_BLOCK >= 512*1024 ? 8 : 1) :
+	      4); /* FAT12 and FAT16: start at 4 sectors per cluster */
+	}
+}
+#else
 static void
 establish_params (int device_num,int size)
 {
@@ -775,10 +1113,11 @@ establish_params (int device_num,int size)
        * command does for FAT32. */
       bs.cluster_size = (char)
 	    (size_fat == 32 ?
-	     ((long long)blocks*SECTORS_PER_BLOCK >= 512*1024 ? 8 : 1) :
+	     ((ll_t)blocks*SECTORS_PER_BLOCK >= 512*1024 ? 8 : 1) :
 	     4); /* FAT12 and FAT16: start at 4 sectors per cluster */
     }
 }
+#endif
 
 
 /* Create the filesystem data tables */
@@ -873,7 +1212,7 @@ setup_tables (void)
     /* In Atari format, hidden is a 16 bit field */
     memset( &bs.hidden, 0, 2 );
 
-  num_sectors = (long long)blocks*BLOCK_SIZE/sector_size;
+  num_sectors = (ll_t)blocks*BLOCK_SIZE/sector_size;
   if (!atari_format) {
     unsigned fatlength12, fatlength16, fatlength32;
     unsigned maxclust12, maxclust16, maxclust32;
@@ -898,7 +1237,7 @@ setup_tables (void)
 
       /* The factor 2 below avoids cut-off errors for nr_fats == 1.
        * The "nr_fats*3" is for the reserved first two FAT entries */
-      clust12 = 2*((long long) fatdata *sector_size + nr_fats*3) /
+      clust12 = 2*((ll_t) fatdata *sector_size + nr_fats*3) /
 	(2*(int) bs.cluster_size * sector_size + nr_fats*3);
       fatlength12 = cdiv (((clust12+2) * 3 + 1) >> 1, sector_size);
       /* Need to recalculate number of clusters, since the unused parts of the
@@ -917,7 +1256,7 @@ setup_tables (void)
 	  printf( "FAT12: too much clusters\n" );
       }
 
-      clust16 = ((long long) fatdata *sector_size + nr_fats*4) /
+      clust16 = ((ll_t) fatdata *sector_size + nr_fats*4) /
 	((int) bs.cluster_size * sector_size + nr_fats*2);
       fatlength16 = cdiv ((clust16+2) * 2, sector_size);
       /* Need to recalculate number of clusters, since the unused parts of the
@@ -945,7 +1284,7 @@ setup_tables (void)
 	clust16 = 0;
       }
 
-      clust32 = ((long long) fatdata *sector_size + nr_fats*8) /
+      clust32 = ((ll_t) fatdata *sector_size + nr_fats*8) /
 	((int) bs.cluster_size * sector_size + nr_fats*4);
       fatlength32 = cdiv ((clust32+2) * 4, sector_size);
       /* Need to recalculate number of clusters, since the unused parts of the
@@ -1062,7 +1401,7 @@ setup_tables (void)
        * size_fat == 12
        * The "2*nr_fats*size_fat/8" is for the reserved first two FAT entries
        */
-      clusters = (2*((long long)fatdata*sector_size - 2*nr_fats*size_fat/8)) /
+      clusters = (2*((ll_t)fatdata*sector_size - 2*nr_fats*size_fat/8)) /
 		 (2*((int)bs.cluster_size*sector_size + nr_fats*size_fat/8));
       fat_length = cdiv( (clusters+2)*size_fat/8, sector_size );
       /* Need to recalculate number of clusters, since the unused parts of the
@@ -1309,6 +1648,9 @@ write_tables (void)
 {
   int x;
   int fat_length;
+#ifdef _WIN32
+  int blk;
+#endif
 
   fat_length = (size_fat == 32) ?
 	       CF_LE_L(bs.fat32.fat32_length) : CF_LE_W(bs.fat_length);
@@ -1335,7 +1677,17 @@ write_tables (void)
   /* seek to start of FATS and write them all */
   seekto( reserved_sectors*sector_size, "first FAT" );
   for (x = 1; x <= nr_fats; x++)
+#ifdef _WIN32
+	  /*
+	   * WIN32 appearently has problems writing very large chunks directly
+	   * to disk devices. To not produce errors because of resource shortages
+	   * split up the write in sector size chunks.
+	   */
+	  for (blk = 0; blk < fat_length; blk++)
+		  writebuf(fat+blk*sector_size, sector_size, "FAT");
+#else
     writebuf( fat, fat_length * sector_size, "FAT" );
+#endif
   /* Write the root directory directly after the last FAT. This is the root
    * dir area on FAT12/16, and the first cluster on FAT32. */
   writebuf( (char *) root_dir, size_root_dir, "root directory" );
@@ -1397,14 +1749,22 @@ main (int argc, char **argv)
   char *tmp;
   char *listfile = NULL;
   FILE *msgfile;
+#ifdef _WIN32
+  static char dev_buf[] = "\\\\.\\X:";
+#else
   struct stat statbuf;
+#endif
   int i = 0, pos, ch;
   int create = 0;
   
   if (argc && *argv) {		/* What's the program name? */
     char *p;
     program_name = *argv;
+#ifdef _WIN32
+    if ((p = strrchr( program_name, '\\' )))
+#else
     if ((p = strrchr( program_name, '/' )))
+#endif
 	program_name = p+1;
   }
 
@@ -1412,8 +1772,11 @@ main (int argc, char **argv)
   volume_id = (long)create_time;	/* Default volume ID = creation time */
   check_atari();
   
-  printf ("%s " VERSION " (" VERSION_DATE ")\n",
-	   program_name);
+  printf ("%s " VERSION " (" VERSION_DATE ")\n"
+#ifdef _WIN32
+	  "Win32 port by Jens-Uwe Mager <jum@anubis.han.de>\n"
+#endif
+	   , program_name);
 
   while ((c = getopt (argc, argv, "AcCf:F:Ii:l:m:n:r:R:s:S:v")) != EOF)
     /* Scan the command line for options */
@@ -1599,7 +1962,16 @@ main (int argc, char **argv)
 	usage ();
       }
 
+  if (optind >= argc)
+	  usage();
   device_name = argv[optind];	/* Determine the number of blocks in the FS */
+#ifdef _WIN32
+  if (device_name[1] == ':' && device_name[2] == '\0') {
+	  dev_buf[4] = device_name[0];
+	  device_name = dev_buf;
+	  is_device = 1;
+  }
+#endif
   if (!create)
     i = count_blocks (device_name); /*  Have a look and see! */
   if (optind == argc - 2)	/*  Either check the user specified number */
@@ -1631,9 +2003,15 @@ main (int argc, char **argv)
 
   if (!create) {
     check_mount (device_name);	/* Is the device already mounted? */
-    dev = open (device_name, O_RDWR);	/* Is it a suitable device to build the FS on? */
+    dev = open (device_name, O_RDWR|O_SHARED);	/* Is it a suitable device to build the FS on? */
     if (dev < 0)
       die ("unable to open %s");
+#ifdef _WIN32
+	if (is_device) {
+		if (fsctl(dev, FSCTL_LOCK_VOLUME) == -1)
+			die("unable to lock %s");
+	}
+#endif
   }
   else {
       loff_t offset = blocks*BLOCK_SIZE - 1;
@@ -1652,6 +2030,11 @@ main (int argc, char **argv)
 	die( "seek failed" );
   }
   
+#ifdef _WIN32
+  if (!is_device)
+	  check = 0;
+  establish_params();
+#else
   if (fstat (dev, &statbuf) < 0)
     die ("unable to stat %s");
   if (!S_ISBLK (statbuf.st_mode)) {
@@ -1676,6 +2059,7 @@ main (int argc, char **argv)
 
   establish_params (statbuf.st_rdev,statbuf.st_size);	
                                 /* Establish the media parameters */
+#endif
 
   setup_tables ();		/* Establish the file system tables */
 
@@ -1686,6 +2070,14 @@ main (int argc, char **argv)
 
   write_tables ();		/* Write the file system tables away! */
 
+#ifdef _WIN32
+	if (is_device) {
+		if (fsctl(dev, FSCTL_DISMOUNT_VOLUME) == -1)
+			die("unable to dismount %s");
+		if (fsctl(dev, FSCTL_UNLOCK_VOLUME) == -1)
+			die("unable to unlock %s");
+	}
+#endif
   exit (0);			/* Terminate with no errors! */
 }
 
