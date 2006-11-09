@@ -55,6 +55,6 @@ names and uses them in listings etc. when available. There are also
 some checks on the (cruel) structure of how LFNs are stored and some
 attempts to fix problems.
 
-- Roman <Roman.Hodek@informatik.uni-erlangen.de>
+- Roman <roman@hodek.net>
 
 BTW, version 2 isn't ALPHA anymore :-)

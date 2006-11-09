@@ -4,7 +4,7 @@ dosfsck \- check and repair MS-DOS file systems
 .SH SYNOPSIS
 .ad l
 .B dosfsck
-.RB [ \-aAflrtvVwy ]
+.RB [ \-aAflnrtvVwy ]
 .RB [ \-d\ \fIpath\fB\ \-d\ \fI...\fB ]
 .RB [ \-u\ \fIpath\fB\ \-u\ \fI...\fB ]
 .I device
@@ -95,10 +95,12 @@ Salvage unused cluster chains to files. By default, unused clusters are
 added to the free disk space except in auto mode (\fB-a\fP).
 .IP \fB\-l\fP
 List path names of files being processed.
+.IP \fB\-n\fP
+No-operation mode: non-interactively check for errors, but don't write
+anything to the filesystem. 
 .IP \fB\-r\fP
 Interactively repair the file system. The user is asked for advice whenever
-there is more than one approach to fix an inconsistency.  This is the default
-behaviour.
+there is more than one approach to fix an inconsistency.
 .IP \fB\-t\fP
 Mark unreadable clusters as bad.
 .IP \fB-u\fP
@@ -138,4 +140,4 @@ should use a more sophisticated algorithm.
 .SH AUTHORS
 Werner Almesberger <werner.almesberger@lrc.di.epfl.ch>
 Extensions (FAT32, VFAT) by and current maintainer:
-Roman Hodek <Roman.Hodek@informatik.uni-erlangen.de>
+Roman Hodek <roman@hodek.net>

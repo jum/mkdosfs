@@ -9,7 +9,9 @@
 #include "../version.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <getopt.h>
 
@@ -37,6 +39,7 @@ static void usage(char *name)
     fprintf(stderr,"  -d path  drop that file\n");
     fprintf(stderr,"  -f       salvage unused chains to files\n");
     fprintf(stderr,"  -l       list path names\n");
+    fprintf(stderr,"  -n       no-op, check non-interactively without changing\n");
     fprintf(stderr,"  -r       interactively repair the file system\n");
     fprintf(stderr,"  -t       test for bad clusters\n");
     fprintf(stderr,"  -u path  try to undelete that (non-directory) file\n");
@@ -87,7 +90,7 @@ int main(int argc,char **argv)
     interactive = 1;
     check_atari();
 
-    while ((c = getopt(argc,argv,"Aad:flrtu:vVwy")) != EOF)
+    while ((c = getopt(argc,argv,"Aad:flnrtu:vVwy")) != EOF)
 	switch (c) {
 	    case 'A': /* toggle Atari format */
 	  	atari_format = !atari_format;
@@ -106,6 +109,10 @@ int main(int argc,char **argv)
 		break;
 	    case 'l':
 		list = 1;
+		break;
+	    case 'n':
+		rw = 0;
+		interactive = 0;
 		break;
 	    case 'r':
 		rw = 1;

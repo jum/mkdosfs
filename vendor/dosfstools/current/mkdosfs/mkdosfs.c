@@ -64,6 +64,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
+
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
+# define __KERNEL__
+# include <asm/types.h>
+# undef __KERNEL__
+#endif
 
 #if __BYTE_ORDER == __BIG_ENDIAN
 
@@ -92,30 +100,9 @@
 
 #endif /* __BIG_ENDIAN */
 
-/* Use the _llseek system call directly, because there (once?) was a bug in
- * the glibc implementation of it. */
-#include <linux/unistd.h>
-#if defined(__alpha) || defined(__ia64__)
-/* On alpha, the syscall is simply lseek, because it's a 64 bit system. */
-static loff_t llseek( int fd, loff_t offset, int whence )
-{
-    return lseek(fd, offset, whence);
-}
-#else
-# ifndef __NR__llseek
-# error _llseek system call not present
-# endif
-static _syscall5( int, _llseek, uint, fd, ulong, hi, ulong, lo,
-		  loff_t *, res, uint, wh );
-static loff_t llseek( int fd, loff_t offset, int whence )
-{
-    loff_t actual;
-
-    if (_llseek(fd, offset>>32, offset&0xffffffff, &actual, whence) != 0)
-	return (loff_t)-1;
-    return actual;
-}
-#endif
+/* In earlier versions, an own llseek() was used, but glibc lseek() is
+ * sufficient (or even better :) for 64 bit offsets in the meantime */
+#define llseek lseek
 
 /* Constant definitions */
 
@@ -174,11 +161,12 @@ cdiv (int a, int b)
 
 #define MAX_CLUST_12	((1 << 12) - 16)
 #define MAX_CLUST_16	((1 << 16) - 16)
+#define MIN_CLUST_32    65529
 /* M$ says the high 4 bits of a FAT32 FAT entry are reserved and don't belong
  * to the cluster number. So the max. cluster# is based on 2^28 */
 #define MAX_CLUST_32	((1 << 28) - 16)
 
-#define FAT12_THRESHOLD	4078
+#define FAT12_THRESHOLD	4085
 
 #define OLDGEMDOS_MAX_SECTORS	32765
 #define GEMDOS_MAX_SECTORS	65531
@@ -268,6 +256,7 @@ char dummy_boot_jump[3] = { 0xeb, 0x3c, 0x90 };
 
 char dummy_boot_jump_m68k[2] = { 0x60, 0x1c };
 
+#define MSG_OFFSET_OFFSET 3
 char dummy_boot_code[BOOTCODE_SIZE] =
   "\x0e"			/* push cs */
   "\x1f"			/* pop ds */
@@ -304,7 +293,7 @@ static int verbose = 0;		/* Default to verbose mode off */
 static long volume_id;		/* Volume ID number */
 static time_t create_time;	/* Creation time */
 static char volume_name[] = "           "; /* Volume name */
-static int blocks;		/* Number of blocks in filesystem */
+static unsigned long long blocks;	/* Number of blocks in filesystem */
 static int sector_size = 512;	/* Size of a logical sector */
 static int sector_size_set = 0; /* User selected sector size */
 static int backup_boot = 0;	/* Sector# of backup boot sector */
@@ -315,7 +304,7 @@ static int size_fat = 0;	/* Size in bits of FAT entries */
 static int size_fat_by_user = 0; /* 1 if FAT size user selected */
 static int dev = -1;		/* FS block device file handle */
 static int  ignore_full_disk = 0; /* Ignore warning about 'full' disk devices */
-static unsigned int currently_testing = 0;	/* Block currently being tested (if autodetect bad blocks) */
+static off_t currently_testing = 0;	/* Block currently being tested (if autodetect bad blocks) */
 static struct msdos_boot_sector bs;	/* Boot sector data */
 static int start_data_sector;	/* Sector number for the start of the data area */
 static int start_data_block;	/* Block number for the start of the data area */
@@ -326,6 +315,7 @@ static int size_root_dir;	/* Size of the root directory in bytes */
 static int sectors_per_cluster = 0;	/* Number of sectors per disk cluster */
 static int root_dir_entries = 0;	/* Number of root directory entries */
 static char *blank_sector;		/* Blank sector - all zeros */
+static int hidden_sectors = 0;		/* Number of hidden sectors */
 
 
 /* Function prototype definitions */
@@ -333,12 +323,12 @@ static char *blank_sector;		/* Blank sector - all zeros */
 static void fatal_error (const char *fmt_string) __attribute__((noreturn));
 static void mark_FAT_cluster (int cluster, unsigned int value);
 static void mark_FAT_sector (int sector, unsigned int value);
-static long do_check (char *buffer, int try, unsigned int current_block);
+static long do_check (char *buffer, int try, off_t current_block);
 static void alarm_intr (int alnum);
 static void check_blocks (void);
 static void get_list_blocks (char *filename);
 static int valid_offset (int fd, loff_t offset);
-static int count_blocks (char *filename);
+static unsigned long long count_blocks (char *filename);
 static void check_mount (char *device_name);
 static void establish_params (int device_num, int size);
 static void setup_tables (void);
@@ -417,12 +407,12 @@ mark_FAT_sector (int sector, unsigned int value)
 /* Perform a test on a block.  Return the number of blocks that could be read successfully */
 
 static long
-do_check (char *buffer, int try, unsigned int current_block)
+do_check (char *buffer, int try, off_t current_block)
 {
   long got;
 
-  if (llseek (dev, (loff_t)current_block * BLOCK_SIZE, SEEK_SET) /* Seek to the correct location */
-      != (loff_t)current_block * BLOCK_SIZE)
+  if (llseek (dev, current_block * BLOCK_SIZE, SEEK_SET) /* Seek to the correct location */
+      != current_block * BLOCK_SIZE)
     die ("seek failed during testing for blocks");
 
   got = read (dev, buffer, try * BLOCK_SIZE);	/* Try reading! */
@@ -451,7 +441,7 @@ alarm_intr (int alnum)
   if (!currently_testing)
     return;
 
-  printf ("%d... ", currently_testing);
+  printf ("%lld... ", (unsigned long long)currently_testing);
   fflush (stdout);
 }
 
@@ -550,10 +540,10 @@ valid_offset (int fd, loff_t offset)
 
 /* Given a filename, look to see how many blocks of BLOCK_SIZE are present, returning the answer */
 
-static int
+static unsigned long long
 count_blocks (char *filename)
 {
-  loff_t high, low;
+  off_t high, low;
   int fd;
 
   if ((fd = open (filename, O_RDONLY)) < 0)
@@ -561,23 +551,24 @@ count_blocks (char *filename)
       perror (filename);
       exit (1);
     }
-  low = 0;
 
-  for (high = 1; valid_offset (fd, high); high *= 2)
-    low = high;
-  while (low < high - 1)
-    {
-      const loff_t mid = (low + high) / 2;
+  /* first try SEEK_END, which should work on most devices nowadays */
+  if ((low = llseek(fd, 0, SEEK_END)) <= 0) {
+      low = 0;
+      for (high = 1; valid_offset (fd, high); high *= 2)
+	  low = high;
+      while (low < high - 1) {
+	  const loff_t mid = (low + high) / 2;
+	  if (valid_offset (fd, mid))
+	      low = mid;
+	  else
+	      high = mid;
+      }
+      ++low;
+  }
 
-      if (valid_offset (fd, mid))
-	low = mid;
-      else
-	high = mid;
-    }
-  valid_offset (fd, 0);
   close (fd);
-
-  return (low + 1) / BLOCK_SIZE;
+  return low / BLOCK_SIZE;
 }
 
 
@@ -697,10 +688,8 @@ establish_params (int device_num,int size)
     }
   else if ((device_num & 0xff00) == 0x0700) /* This is a loop device */
     {
-      /* Can we get the loop geometry? This is in 512 byte blocks, always? */
       if (ioctl (dev, BLKGETSIZE, &loop_size)) 
-	die ("unable to get loop geometry for '%s'");
-      loop_size = loop_size >> 1;
+	die ("unable to get loop device size");
 
       switch (loop_size)  /* Assuming the loop device -> floppy later */
 	{
@@ -762,21 +751,41 @@ establish_params (int device_num,int size)
     {
       /* Can we get the drive geometry? (Note I'm not too sure about */
       /* whether to use HDIO_GETGEO or HDIO_REQ) */
-      if (ioctl (dev, HDIO_GETGEO, &geometry))
-	die ("unable to get drive geometry for '%s'");
-      bs.secs_track = CT_LE_W(geometry.sectors);	/* Set up the geometry information */
-      bs.heads = CT_LE_W(geometry.heads);
+      if (ioctl (dev, HDIO_GETGEO, &geometry)) {
+	printf ("unable to get drive geometry, using default 255/63");
+        bs.secs_track = CT_LE_W(63);
+        bs.heads = CT_LE_W(255);
+      }
+      else {
+        bs.secs_track = CT_LE_W(geometry.sectors);	/* Set up the geometry information */
+        bs.heads = CT_LE_W(geometry.heads);
+      }
     def_hd_params:
       bs.media = (char) 0xf8; /* Set up the media descriptor for a hard drive */
       bs.dir_entries[0] = (char) 0;	/* Default to 512 entries */
       bs.dir_entries[1] = (char) 2;
-      /* For FAT32, use 4k clusters on sufficiently large file systems,
-       * otherwise 1 sector per cluster. This is also what M$'s format
-       * command does for FAT32. */
-      bs.cluster_size = (char)
-	    (size_fat == 32 ?
-	     ((long long)blocks*SECTORS_PER_BLOCK >= 512*1024 ? 8 : 1) :
-	     4); /* FAT12 and FAT16: start at 4 sectors per cluster */
+      if (!size_fat && blocks*SECTORS_PER_BLOCK > 1064960) {
+	  if (verbose) printf("Auto-selecting FAT32 for large filesystem\n");
+	  size_fat = 32;
+      }
+      if (size_fat == 32) {
+	  /* For FAT32, try to do the same as M$'s format command:
+	   * fs size < 256M: 0.5k clusters
+	   * fs size <   8G: 4k clusters
+	   * fs size <  16G: 8k clusters
+	   * fs size >= 16G: 16k clusters
+	   */
+	  unsigned long sz_mb =
+	      (blocks+(1<<(20-BLOCK_SIZE_BITS))-1) >> (20-BLOCK_SIZE_BITS);
+	  bs.cluster_size = sz_mb >= 16*1024 ? 32 :
+			    sz_mb >=  8*1024 ? 16 :
+			    sz_mb >=     256 ?  8 :
+					        1;
+      }
+      else {
+	  /* FAT12 and FAT16: start at 4 sectors per cluster */
+	  bs.cluster_size = (char) 4;
+      }
     }
 }
 
@@ -840,10 +849,14 @@ setup_tables (void)
 		       (char *)&bs) - 2;
 
     if (size_fat == 32) {
+	int offset = (char *)&bs.fat32.boot_code -
+		     (char *)&bs + MESSAGE_OFFSET + 0x7c00;
 	if (dummy_boot_code[BOOTCODE_FAT32_SIZE-1])
 	  printf ("Warning: message too long; truncated\n");
 	dummy_boot_code[BOOTCODE_FAT32_SIZE-1] = 0;
 	memcpy(bs.fat32.boot_code, dummy_boot_code, BOOTCODE_FAT32_SIZE);
+	bs.fat32.boot_code[MSG_OFFSET_OFFSET] = offset & 0xff;
+	bs.fat32.boot_code[MSG_OFFSET_OFFSET+1] = offset >> 8;
     }
     else {
 	memcpy(bs.oldfat.boot_code, dummy_boot_code, BOOTCODE_SIZE);
@@ -868,10 +881,14 @@ setup_tables (void)
     printf( "Using %d reserved sectors\n", reserved_sectors );
   bs.fats = (char) nr_fats;
   if (!atari_format || size_fat == 32)
-    bs.hidden = CT_LE_L(0);
-  else
+    bs.hidden = CT_LE_L(hidden_sectors);
+  else {
     /* In Atari format, hidden is a 16 bit field */
-    memset( &bs.hidden, 0, 2 );
+    __u16 hidden = CT_LE_W(hidden_sectors);
+    if (hidden_sectors & ~0xffff)
+      die("#hidden doesn't fit in 16bit field of Atari format\n");
+    memcpy( &bs.hidden, &hidden, 2 );
+  }
 
   num_sectors = (long long)blocks*BLOCK_SIZE/sector_size;
   if (!atari_format) {
@@ -955,6 +972,11 @@ setup_tables (void)
       maxclust32 = (fatlength32 * sector_size) / 4;
       if (maxclust32 > MAX_CLUST_32)
 	maxclust32 = MAX_CLUST_32;
+      if (clust32 && clust32 < MIN_CLUST_32 && !(size_fat_by_user && size_fat == 32)) {
+       clust32 = 0;
+       if (verbose >= 2)
+         printf( "FAT32: not enough clusters (%d)\n", MIN_CLUST_32);
+      }
       if (verbose >= 2)
 	printf( "FAT32: #clu=%u, fatlen=%u, maxclu=%u, limit=%u\n",
 		clust32, fatlength32, maxclust32, MAX_CLUST_32 );
@@ -1340,6 +1362,7 @@ write_tables (void)
    * dir area on FAT12/16, and the first cluster on FAT32. */
   writebuf( (char *) root_dir, size_root_dir, "root directory" );
 
+  if (blank_sector) free( blank_sector );
   if (info_sector) free( info_sector );
   free (root_dir);   /* Free up the root directory space from setup_tables */
   free (fat);  /* Free up the fat table space reserved during setup_tables */
@@ -1355,7 +1378,7 @@ usage (void)
 Usage: mkdosfs [-A] [-c] [-C] [-v] [-I] [-l bad-block-file] [-b backup-boot-sector]\n\
        [-m boot-msg-file] [-n volume-name] [-i volume-id]\n\
        [-s sectors-per-cluster] [-S logical-sector-size] [-f number-of-FATs]\n\
-       [-F fat-size] [-r root-dir-entries] [-R reserved-sectors]\n\
+       [-h hidden-sectors] [-F fat-size] [-r root-dir-entries] [-R reserved-sectors]\n\
        /dev/name [blocks]\n");
 }
 
@@ -1400,6 +1423,7 @@ main (int argc, char **argv)
   struct stat statbuf;
   int i = 0, pos, ch;
   int create = 0;
+  unsigned long long cblocks;
   
   if (argc && *argv) {		/* What's the program name? */
     char *p;
@@ -1415,7 +1439,7 @@ main (int argc, char **argv)
   printf ("%s " VERSION " (" VERSION_DATE ")\n",
 	   program_name);
 
-  while ((c = getopt (argc, argv, "AcCf:F:Ii:l:m:n:r:R:s:S:v")) != EOF)
+  while ((c = getopt (argc, argv, "AbcCf:F:Ii:l:m:n:r:R:s:S:h:v")) != EOF)
     /* Scan the command line for options */
     switch (c)
       {
@@ -1459,12 +1483,21 @@ main (int argc, char **argv)
 	size_fat_by_user = 1;
 	break;
 
+      case 'h':        /* h : number of hidden sectors */
+	hidden_sectors = (int) strtol (optarg, &tmp, 0);
+	if ( *tmp || hidden_sectors < 0 )
+	  {
+	    printf("Bad number of hidden sectors : %s\n", optarg);
+	    usage ();
+	  }
+	break;
+
       case 'I':
 	ignore_full_disk = 1;
 	break;
 
       case 'i':		/* i : specify volume ID */
-	volume_id = strtol(optarg, &tmp, 16);
+	volume_id = strtoul(optarg, &tmp, 16);
 	if ( *tmp )
 	  {
 	    printf("Volume ID must be a hexadecimal number\n");
@@ -1598,28 +1631,33 @@ main (int argc, char **argv)
 	printf( "Unknown option: %c\n", c );
 	usage ();
       }
-
-  device_name = argv[optind];	/* Determine the number of blocks in the FS */
-  if (!create)
-    i = count_blocks (device_name); /*  Have a look and see! */
+  if (optind < argc)
+    {
+      device_name = argv[optind];  /* Determine the number of blocks in the FS */
+      if (!create)
+         cblocks = count_blocks (device_name); /*  Have a look and see! */
+    }
   if (optind == argc - 2)	/*  Either check the user specified number */
     {
-      blocks = (int) strtol (argv[optind + 1], &tmp, 0);
-      if (!create && blocks != i)
+      blocks = strtoull (argv[optind + 1], &tmp, 0);
+      if (!create && blocks != cblocks)
 	{
 	  fprintf (stderr, "Warning: block count mismatch: ");
-	  fprintf (stderr, "found %d but assuming %d.\n",i,blocks);
+	  fprintf (stderr, "found %llu but assuming %llu.\n",cblocks,blocks);
 	}
     }
   else if (optind == argc - 1)	/*  Or use value found */
     {
       if (create)
 	die( "Need intended size with -C." );
-      blocks = i;
+      blocks = cblocks;
       tmp = "";
     }
   else
-    usage ();
+    {
+      fprintf (stderr, "No device specified!\n");
+      usage ();
+    }
   if (*tmp)
     {
       printf ("Bad block count : %s\n", argv[optind + 1]);
@@ -1636,10 +1674,10 @@ main (int argc, char **argv)
       die ("unable to open %s");
   }
   else {
-      loff_t offset = blocks*BLOCK_SIZE - 1;
+      off_t offset = blocks*BLOCK_SIZE - 1;
       char null = 0;
       /* create the file */
-      dev = open( device_name, O_RDWR|O_CREAT|O_TRUNC, 0775 );
+      dev = open( device_name, O_RDWR|O_CREAT|O_TRUNC, 0666 );
       if (dev < 0)
 	die("unable to create %s");
       /* seek to the intended end-1, and write one byte. this creates a
@@ -1672,7 +1710,7 @@ main (int argc, char **argv)
 	(statbuf.st_rdev & 0xff3f) == 0x0d00 || /* xd */
 	(statbuf.st_rdev & 0xff3f) == 0x1600 )  /* hdc, hdd */
 	)
-      die ("Will not try to make filesystem on '%s'");
+      die ("Will not try to make filesystem on full-disk device '%s' (use -I if wanted)");
 
   establish_params (statbuf.st_rdev,statbuf.st_size);	
                                 /* Establish the media parameters */

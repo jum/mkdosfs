@@ -31,6 +31,10 @@
 .I FAT-size
 ]
 [
+.B \-h
+.I number-of-hidden-sectors
+]
+[
 .B \-i
 .I volume-id
 ]
@@ -126,7 +130,13 @@ between 12 and 16 bit, whatever fits better for the filesystem size.
 32 bit FAT (FAT32 format) must (still) be selected explicitly if you
 want it.
 .TP
-.BI \-i " volume-id"
+.BI \-h " number-of-hidden-sectors "
+Select the number of hidden sectors in the volume. Apparently some
+digital cameras get indigestion if you feed them a CF card without
+such hidden sectors, this option allows you to satisfy them. Assumes
+\'0\' if no value is given on the command line.
+.TP
+.I \-i " volume-id"
 Sets the volume ID of the newly created filesystem;
 .I volume-id
 is a 32-bit hexadecimal number (for example, 2e24ec82).  The default
@@ -180,12 +190,16 @@ and greater than or equal to 512, i.e. 512, 1024, 2048, 4096, 8192,
 .B \-v
 Verbose execution.
 .SH BUGS
-None are know at the moment.  If you find any, please report it them
-to <hpa@yggdrasil.com>.  Please include the version number (Yggdrasil 0.3a).
+.B mkdosfs
+can not create bootable filesystems. This isn't as easy as you might
+think at first glance for various reasons and has been discussed a lot
+already.
+.B mkdosfs
+simply will not support it ;)
 .SH AUTHOR
 Dave Hudson - <dave@humbug.demon.co.uk>; modified by Peter Anvin
 <hpa@yggdrasil.com>. Fixes and additions by Roman Hodek
-<Roman.Hodek@informatik.uni-erlangen.de> for Debian/GNU Linux.
+<roman@hodek.net> for Debian/GNU Linux.
 .SH ACKNOWLEDGEMENTS
 .B mkdosfs
 is based on code from

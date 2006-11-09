@@ -93,10 +93,10 @@ char get_key(char *valid,char *prompt)
 	if (prompt) printf("%s ",prompt);
 	fflush(stdout);
 	while (ch = getchar(), ch == ' ' || ch == '\t');
-	if (ch == EOF) exit(0);
+	if (ch == EOF) exit(1);
 	if (!strchr(valid,okay = ch)) okay = 0;
 	while (ch = getchar(), ch != '\n' && ch != EOF);
-	if (ch == EOF) exit(0);
+	if (ch == EOF) exit(1);
 	if (okay) return okay;
 	printf("Invalid input.\n");
     }

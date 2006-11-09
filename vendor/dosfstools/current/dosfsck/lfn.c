@@ -119,7 +119,13 @@ static void clear_lfn_slots( int start, int end )
     int i;
     LFN_ENT empty;
 
+    /* New dir entry is zeroed except first byte, which is set to 0xe5.
+     * This is to avoid that some FAT-reading OSes (not Linux! ;) stop reading
+     * a directory at the first zero entry...
+     */
     memset( &empty, 0, sizeof(empty) );
+    empty.id = DELETED_FLAG;
+    
     for( i = start; i <= end; ++i ) {
 	fs_write( lfn_offsets[i], sizeof(LFN_ENT), &empty );
     }
@@ -309,13 +315,15 @@ void lfn_add_slot( DIR_ENT *de, loff_t dir_offset )
 	    }
 	}
     }
-    
-    lfn_slot--;
-    offset = lfn_slot * CHARS_PER_LFN*2;
-    copy_lfn_part( lfn_unicode+offset, lfn );
-    if (lfn->id & LFN_ID_START)
-	lfn_unicode[offset+26] = lfn_unicode[offset+27] = 0;
-    lfn_offsets[lfn_parts++] = dir_offset;
+
+    if (lfn_slot != -1) {
+	lfn_slot--;
+	offset = lfn_slot * CHARS_PER_LFN*2;
+	copy_lfn_part( lfn_unicode+offset, lfn );
+	if (lfn->id & LFN_ID_START)
+	    lfn_unicode[offset+26] = lfn_unicode[offset+27] = 0;
+	lfn_offsets[lfn_parts++] = dir_offset;
+    }
 
     if (lfn->reserved != 0) {
 	printf( "Reserved field in VFAT long filename slot is not 0 "
@@ -446,6 +454,23 @@ char *lfn_get( DIR_ENT *de )
     return( lfn );
 }
 
+void lfn_check_orphaned(void)
+{
+    char *long_name;
+
+    if (lfn_slot == -1)
+	return;
+
+    long_name = CNV_PARTS_SO_FAR();
+    printf("Orphaned long file name part \"%s\"\n", long_name);
+    if (interactive)
+	printf( "1: Delete.\n2: Leave it.\n" );
+    else printf( "  Auto-deleting.\n" );
+    if (!interactive || get_key("12","?") == '1') {
+	clear_lfn_slots(0, lfn_parts - 1);
+    }
+    lfn_reset();
+}
 
 /* Local Variables: */
 /* tab-width: 8     */

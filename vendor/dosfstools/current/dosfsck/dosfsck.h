@@ -12,16 +12,35 @@
 #include <sys/types.h>
 #define _LINUX_STAT_H		/* hack to avoid inclusion of <linux/stat.h> */
 #define _LINUX_STRING_H_	/* hack to avoid inclusion of <linux/string.h>*/
+#define _LINUX_FS_H             /* hack to avoid inclusion of <linux/fs.h> */
+
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
+# define __KERNEL__
+# include <asm/types.h>
+# include <asm/byteorder.h>
+# undef __KERNEL__
+#endif
+
 #include <linux/msdos_fs.h>
 
-/* 2.1 kernels use le16_to_cpu() type functions for CF_LE_W & Co., but don't
- * export this macros, only __le16_to_cpu(). */
-#ifndef le16_to_cpu
-#define le16_to_cpu	__le16_to_cpu
-#define le32_to_cpu	__le32_to_cpu
-#define cpu_to_le16	__cpu_to_le16
-#define cpu_to_le32	__cpu_to_le32
-#endif
+#undef CF_LE_W
+#undef CF_LE_L
+#undef CT_LE_W
+#undef CT_LE_L
+
+#if __BYTE_ORDER == __BIG_ENDIAN
+#include <byteswap.h>
+#define CF_LE_W(v) bswap_16(v)
+#define CF_LE_L(v) bswap_32(v)
+#define CT_LE_W(v) CF_LE_W(v)
+#define CT_LE_L(v) CF_LE_L(v)
+#else
+#define CF_LE_W(v) (v)
+#define CF_LE_L(v) (v)
+#define CT_LE_W(v) (v)
+#define CT_LE_L(v) (v)
+#endif /* __BIG_ENDIAN */
 
 #define VFAT_LN_ATTR (ATTR_RO | ATTR_HIDDEN | ATTR_SYS | ATTR_VOLUME)
 
@@ -70,7 +89,7 @@ struct info_sector {
 };
 
 typedef struct {
-    __s8	name[8],ext[3];	/* name and extension */
+    __u8	name[8],ext[3];	/* name and extension */
     __u8	attr;		/* attribute bits */
     __u8	lcase;		/* Case for base and extension */
     __u8	ctime_ms;	/* Creation time, milliseconds */
@@ -99,6 +118,7 @@ typedef struct {
 } FAT_ENTRY;
 
 typedef struct {
+    int nfats;
     loff_t fat_start;
     unsigned int fat_size; /* unit is bytes */
     unsigned int fat_bits; /* size of a FAT entry */

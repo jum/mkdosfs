@@ -12,7 +12,17 @@
 #include <ctype.h>
 #include <unistd.h>
 
-#define _LINUX_STRING_H_
+#define _LINUX_STAT_H		/* hack to avoid inclusion of <linux/stat.h> */
+#define _LINUX_STRING_H_	/* hack to avoid inclusion of <linux/string.h>*/
+#define _LINUX_FS_H             /* hack to avoid inclusion of <linux/fs.h> */
+
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
+# define __KERNEL__
+# include <asm/types.h>
+# undef __KERNEL__
+#endif
+
 #include <linux/msdos_fs.h>
 
 #include "common.h"

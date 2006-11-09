@@ -39,32 +39,20 @@ static int fd,did_change = 0;
 
 unsigned device_no;
 
-/* Use the _llseek system call directly, because there (once?) was a bug in
- * the glibc implementation of it. */
-#include <linux/unistd.h>
-#if defined(__alpha) || defined (__ia64__)
-/* On alpha, the syscall is simply lseek, because it's a 64 bit system. */
+
+#ifdef __DJGPP__
+#include "volume.h"	/* DOS lowlevel disk access functions */
+#undef llseek
 static loff_t llseek( int fd, loff_t offset, int whence )
 {
-    return lseek(fd, offset, whence);
+    if ((whence != SEEK_SET) || (fd == 4711)) return -1; /* only those supported */
+    return VolumeSeek(offset);
 }
-#else
-# ifndef __NR__llseek
-# error _llseek system call not present
-# endif
-static _syscall5( int, _llseek, uint, fd, ulong, hi, ulong, lo,
-		  loff_t *, res, uint, wh );
-
-static loff_t llseek( int fd, loff_t offset, int whence )
-{
-    loff_t actual;
-
-    if (_llseek(fd, offset>>32, offset&0xffffffff, &actual, whence) != 0)
-	return (loff_t)-1;
-    return actual;
-}
+#define open OpenVolume
+#define close CloseVolume
+#define read(a,b,c) ReadVolume(b,c)
+#define write(a,b,c) WriteVolume(b,c)
 #endif
-
 
 void fs_open(char *path,int rw)
 {
@@ -75,9 +63,25 @@ void fs_open(char *path,int rw)
     changes = last = NULL;
     did_change = 0;
 
+#ifndef _DJGPP_
     if (fstat(fd,&stbuf) < 0)
-	pdie("fstat",path);
+	pdie("fstat %s",path);
     device_no = S_ISBLK(stbuf.st_mode) ? (stbuf.st_rdev >> 8) & 0xff : 0;
+#else
+    if (IsWorkingOnImageFile()) {
+	if (fstat(GetVolumeHandle(),&stbuf) < 0)
+	    pdie("fstat image %s",path);
+	device_no = 0;
+    }
+    else {
+        /* return 2 for floppy, 1 for ramdisk, 7 for loopback  */
+        /* used by boot.c in Atari mode: floppy always FAT12,  */
+        /* loopback / ramdisk only FAT12 if usual floppy size, */
+        /* harddisk always FAT16 on Atari... */
+        device_no = (GetVolumeHandle() < 2) ? 2 : 1;
+        /* telling "floppy" for A:/B:, "ramdisk" for the rest */
+    }
+#endif
 }
 
 
@@ -146,13 +150,13 @@ static void fs_flush(void)
 	changes = changes->next;
 	if (llseek(fd,this->pos,0) != this->pos)
 	    fprintf(stderr,"Seek to %lld failed: %s\n  Did not write %d bytes.\n",
-	      this->pos,strerror(errno),this->size);
+	      (long long)this->pos,strerror(errno),this->size);
 	else if ((size = write(fd,this->data,this->size)) < 0)
 		fprintf(stderr,"Writing %d bytes at %lld failed: %s\n",this->size,
-		  this->pos,strerror(errno));
+		  (long long)this->pos,strerror(errno));
 	    else if (size != this->size)
 		    fprintf(stderr,"Wrote %d bytes instead of %d bytes at %lld."
-		      "\n",size,this->size,this->pos);
+		      "\n",size,this->size,(long long)this->pos);
 	free(this->data);
 	free(this);
     }
