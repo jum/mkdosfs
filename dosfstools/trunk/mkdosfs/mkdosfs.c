@@ -803,6 +803,7 @@ count_blocks (char *filename)
 	int fd;
 	DISK_GEOMETRY geom;
 	BY_HANDLE_FILE_INFORMATION hinfo;
+	PARTITION_INFORMATION part_info;
 	DWORD ret;
 	loff_t len = 0;
 
@@ -813,13 +814,22 @@ count_blocks (char *filename)
 	/*
 	 * This should probably use IOCTL_DISK_GET_LENGTH_INFO here, but
 	 * this ioctl is only available in XP and up.
+	 *
+	 * PATCHED: the IOCTL_DISK_GET_DRIVE_GEOMETRY does not return hidden sectors 
+	 * in the geometry which causes problems for larger partitions
+	 * therefore we call IOCTL_DISK_GET_PARTITION_INFO to get part_info.PartitionLength
+	 * and then divide by geom.BytesPerSector
 	 */
 	if (is_device) {
-		if (!DeviceIoControl((HANDLE)fd, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &geom, sizeof(geom), &ret, NULL)) {
+		if (!DeviceIoControl((HANDLE)fd, IOCTL_DISK_GET_DRIVE_GEOMETRY, NULL, 0, &geom, sizeof(geom), &ret, NULL) ||
+			!DeviceIoControl((HANDLE)fd, IOCTL_DISK_GET_PARTITION_INFO, NULL, 0, &part_info, sizeof(part_info), &ret, NULL)) {
 			errno = GetLastError();
 			die("unable to get length for '%s'");
 		}
-		len = (loff_t)geom.Cylinders.QuadPart*(loff_t)geom.TracksPerCylinder*(loff_t)geom.SectorsPerTrack*(loff_t)BLOCK_SIZE;
+		
+		//len = (loff_t)geom.Cylinders.QuadPart*(loff_t)geom.TracksPerCylinder*(loff_t)geom.SectorsPerTrack*(loff_t)BLOCK_SIZE;
+		len = ((loff_t)part_info.PartitionLength.QuadPart / (loff_t)geom.BytesPerSector)*(loff_t)BLOCK_SIZE;
+
 	} else {
 		if (!GetFileInformationByHandle((HANDLE)fd, &hinfo)) {
 				errno = GetLastError();
