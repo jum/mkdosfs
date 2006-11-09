@@ -81,11 +81,13 @@
 #include <time.h>
 #include <errno.h>
 
+#ifndef _WIN32
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0)
 # define __KERNEL__
 # include <asm/types.h>
 # undef __KERNEL__
+#endif
 #endif
 
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -122,8 +124,11 @@ typedef unsigned short __u16;
 typedef unsigned int __u32;
 typedef unsigned __int64 __u64;
 typedef __int64 loff_t;
-typedef __int64 off_t;
+#define off_t loff_t
 typedef __int64 ll_t;
+
+// XXX: Fixme: what is used for 64 bit on VC? 
+#define strtoull strtoul
 
 extern char *optarg;
 extern int optind;
