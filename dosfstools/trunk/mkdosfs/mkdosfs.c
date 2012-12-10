@@ -290,7 +290,7 @@ static loff_t WIN32llseek(int fd, loff_t offset, int whence)
 		errno = err;
 		return -1;
 	}
-	return ((loff_t)hi << 32) | (off_t)lo;
+	return ((loff_t)hi << 32) | (unsigned long)lo;
 }
 
 int fsctl(int fd, int code)
